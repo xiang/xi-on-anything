@@ -57,6 +57,11 @@ typedef struct XPad
 } XPad;
 
 int input_xpad(int index, XPad* out);
+/* The same without the capture below: what the pad is really doing. */
+int input_xpad_raw(int index, XPad* out);
+/* While on, input_xpad, input_pad_dinput and input_pad_state show an empty pad (connected, nothing
+ * pressed), so a button pressed to bind it does nothing in the game. Thread safe. */
+void input_pad_capture(int on);
 /* Rumble: motor speeds 0..65535 (XINPUT_VIBRATION), until the next call. */
 void input_rumble(int index, uint16_t low, uint16_t high);
 
