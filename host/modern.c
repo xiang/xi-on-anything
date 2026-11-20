@@ -45,6 +45,7 @@
 #include "gfx_queue.h" /* -DGFX_QUEUE: the calls go through the render queue */
 #include "gthread.h"
 #include "gwin.h"
+#include "input.h"
 #include "k32.h"
 #include "modern.h"
 #include "plat.h"
@@ -239,9 +240,8 @@ static int g_now_w, g_now_h;
  * the game reads them (10005130), each the button that does it: under XInput 0 B, 1 X, 2 Y, 3 A,
  * 4 right, 5 left, 6 up, 7 down, 8 LB, 9 LT, 10 L stick, 11 RB, 12 RT, 13 R stick, 14 Start, 15 Back
  * (the table at 10329810), -1 none; 32 lX, 33 lY, 35 lRx, 36 lRy a stick (negated: its up or left). Config > Gamepad's rows are the functions a button does ("@pad<n>": function n), a list
- * of the buttons each; a button given to one function is taken from the one that had it, which gets
- * this one's. Written at once, and the game told (its window's message 0x800b reads the pad's values
- * again, as the tool's saving does): no restart. */
+ * of the buttons each; a button does one function (pressing one in use swaps). Written at once, and the game told (its window's message
+ * 0x800b reads the pad's values again, as the tool's saving does): no restart. */
 static const char PAD_KEY[] = "HKEY_LOCAL_MACHINE\\SOFTWARE\\PlayOnlineUS\\SquareEnix\\FinalFantasyXI",
                   PAD_DEFAULT[] = "8,9,13,12,10,0,1,3,2,15,-1,-1,14,-33,-33,32,32,-36,-36,35,35,6,7,5,4,11,-1";
 enum
@@ -289,17 +289,28 @@ static int pad_get(int f)
     return 0;
 }
 
+/* the functions the menus need: Select / Confirm, Cancel, Main Menu and the four directions. Never none,
+ * or the player could not get back to this page */
+static int pad_needed(int f) { return f == 5 || f == 6 || f == 7 || (f >= 21 && f <= 24); }
+
+/* f takes the button i; the function that had it gets f's old one (none stays none, but not for a
+ * function the menus need: then nothing changes) */
 static void pad_set(int f, int i)
 {
     if (f < 0 || f >= PAD_FUNCS || i < 0 || i >= PAD_NBUTTONS)
         return;
     int v[PAD_FUNCS], code = PAD_BUTTONS[i].code;
     pad_read(v);
-    if (v[f] == code)
+    int old = v[f] >= 0 && v[f] < 32 ? v[f] : -1;
+    if (v[f] == code || (code < 0 && pad_needed(f)))
         return;
     for (int k = 0; k < PAD_FUNCS && code >= 0; ++k)
         if (k != f && v[k] == code)
-            v[k] = v[f] >= 0 && v[f] < 32 ? v[f] : -1; /* the one that had it gets this one's button */
+        {
+            if (old < 0 && pad_needed(k))
+                return;
+            v[k] = old;
+        }
     v[f] = code;
     char s[256];
     size_t n = 0;
@@ -316,6 +327,83 @@ static void pad_set(int f, int i)
 static List* list_of(const char* key)
 {
     return !strcmp(key, "@res") ? &g_res : !strcmp(key, "@menu") ? &g_scale : !strncmp(key, "@pad", 4) ? &g_pad : NULL;
+}
+
+/* ---- press to bind: Select on a Gamepad row listens, and the next button pressed is that function's ----
+ * The game sees an empty pad meanwhile (input_pad_capture). Waits for the pad to be let go, takes the first
+ * button pressed (one in use is swapped from the row that has it), gives up after LISTEN_MS, and stays empty until
+ * let go so the press does not fire at once. Select while listening is ignored (a click sends two). */
+enum
+{
+    LISTEN_MS = 4000,
+    LISTEN_OFF = 0,
+    LISTEN_RELEASE, /* waiting for the pad to be let go */
+    LISTEN_PRESS,   /* waiting for a press */
+    LISTEN_AFTER,   /* done: empty until let go */
+};
+static struct
+{
+    int phase, fn;
+    Uint64 since;
+} g_listen = { .fn = -1 };
+static int g_spr_listen;
+
+static int listening(void) { return g_listen.phase == LISTEN_RELEASE || g_listen.phase == LISTEN_PRESS; }
+
+/* the game's button code for each button down on the real pad, -1 if none: the first found */
+static int pad_pressed(void)
+{
+    static const struct
+    {
+        uint16_t bit;
+        int code;
+    } BITS[] = { { 0x0001, 6 }, { 0x0002, 7 }, { 0x0004, 5 }, { 0x0008, 4 }, { 0x0010, 14 }, { 0x0020, 15 },
+        { 0x0040, 10 }, { 0x0080, 13 }, { 0x0100, 8 }, { 0x0200, 11 }, { 0x1000, 3 }, { 0x2000, 0 }, { 0x4000, 1 },
+        { 0x8000, 2 } };
+    XPad x;
+    if (!input_xpad_raw(0, &x))
+        return -1;
+    for (size_t i = 0; i < sizeof BITS / sizeof BITS[0]; ++i)
+        if (x.buttons & BITS[i].bit)
+            return BITS[i].code;
+    return x.lt > 128 ? 9 : x.rt > 128 ? 12 : -1;
+}
+
+static void listen_stop(void)
+{
+    if (listening())
+        g_listen.phase = LISTEN_AFTER;
+    g_listen.fn = -1;
+}
+
+static void listen_start(int fn)
+{
+    if (listening() && g_listen.fn == fn)
+        return;
+    g_listen.fn = fn, g_listen.phase = LISTEN_RELEASE, g_listen.since = SDL_GetTicks();
+    input_pad_capture(1);
+}
+
+/* each frame the page is up */
+static void listen_tick(void)
+{
+    if (g_listen.phase == LISTEN_OFF)
+        return;
+    int down = pad_pressed();
+    Uint64 now = SDL_GetTicks();
+    if (g_listen.phase == LISTEN_RELEASE && down < 0)
+        g_listen.phase = LISTEN_PRESS, g_listen.since = now;
+    else if (g_listen.phase == LISTEN_PRESS && down >= 0)
+    {
+        for (int i = 0; i < PAD_NBUTTONS; ++i)
+            if (PAD_BUTTONS[i].code == down)
+                pad_set(g_listen.fn, i);
+        listen_stop();
+    }
+    else if (g_listen.phase == LISTEN_PRESS && now - g_listen.since > LISTEN_MS)
+        listen_stop();
+    else if (g_listen.phase == LISTEN_AFTER && down < 0)
+        g_listen.phase = LISTEN_OFF, input_pad_capture(0);
 }
 
 /* the menus' size for a window and a scale: w x h over it, as wide as the interface's shape */
@@ -1609,6 +1697,8 @@ static int build_sheet(void)
     list_sprites(&g_res);
     list_sprites(&g_scale);
     list_sprites(&g_pad);
+    g_spr_listen = sprite_begin();
+    words((TRACK_W - text_width("Press a button")) / 2 - 0x25, 2 - 4, "Press a button", 0);
     g_spr_main = button_sprite("Advanced", 88);
     g_spr_adv_title = title_sprite("Advanced", ADV_W, &g_adv_tab_x, &g_adv_tab_w);
     S.p[count] = (uint8_t)S.sprites, S.p[count + 1] = (uint8_t)(S.sprites >> 8);
@@ -2021,6 +2111,8 @@ static void page_open(Guest* g) { RET(0, 0); }
 
 static void page_close(Guest* g)
 {
+    g_listen.phase = LISTEN_OFF, g_listen.fn = -1; /* the page's draw that would end it is gone */
+    input_pad_capture(0);
     if (page_of(g->ecx) == &PAGES[PAGE_ADDONS] && g_addons)
         g_addons->seen();
     save();
@@ -2033,6 +2125,7 @@ static void page_draw(Guest* g)
 {
     uint32_t self = g->ecx, window = window_of(self), fill = sprite(g_spr_fill);
     Page* p = page_of(self);
+    listen_tick();
     if (p == &PAGES[PAGE_ADDONS] && g_addons)
         addons_draw(p, window);
     for (int r = 0; p && r < p->nrows; ++r)
@@ -2044,7 +2137,8 @@ static void page_draw(Guest* g)
             continue;
         if (row->kind == PICK && l && l->n)
         {
-            uint32_t value = sprite(l->spr[(int)get(row)]);
+            int asking = l == &g_pad && listening() && g_listen.fn == atoi(row->key + 4);
+            uint32_t value = sprite(asking ? g_spr_listen : l->spr[(int)get(row)]);
             if (value)
             {
                 wr32(self + 0x14, value);
@@ -2110,7 +2204,18 @@ static void page_input(Guest* g)
         const Item* it = &p->items[id - 1];
         const Row* row = &p->rows[it->row];
         const List* l = list_of(row->key);
-        if (row->kind == PICK && l && l->n)
+        if (row->kind == PICK && l == &g_pad)
+        {
+            int f = atoi(row->key + 4);
+            if (ev == EV_SELECT)
+                listen_start(f); /* a second select (a click sends two) changes nothing */
+            else if (ev == EV_LEFT || ev == EV_RIGHT)
+            {
+                listen_stop();
+                pad_set(f, 0); /* None: not for the functions the menus need */
+            }
+        }
+        else if (row->kind == PICK && l && l->n)
         {
             int at = (int)get(row);
             if (ev == EV_LEFT)

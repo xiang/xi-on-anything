@@ -153,8 +153,10 @@ the Lighting and Atmosphere pages.
 The game's own button map, registry `padsin000`, which on Windows only `FFXiPadConfig.exe` sets. The
 Gamepad buttons in the title screen's Config window and in Config (item 13) open **Config › Gamepad**
 in its place; it is also in the Advanced list. Each row is a function, set to a button (None, A, B, X,
-Y, LB, RB, LT, RT, L Stick, R Stick, Start, Back, the D-pad). A button given to one function is taken
-from the function that had it, which gets the old one's. A change is written at once and the game
+Y, LB, RB, LT, RT, L Stick, R Stick, Start, Back, the D-pad). A button does one function, and
+Select / Confirm, Cancel, Main Menu and the four menu directions are never None. Select on a row listens
+("Press a button", about four seconds): the next button pressed on the pad is that function's, and the
+game sees nothing of it; one in use is swapped: the row that had it gets this row's old button. Left or right sets a row to None. A change is written at once and the game
 reads the map again (window message `0x800b`), so it applies without a restart. Button names are an
 Xbox pad's; SDL lays every pad out as one (A is the bottom face button).
 

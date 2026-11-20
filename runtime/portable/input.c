@@ -323,9 +323,14 @@ const char* input_pad_name(int index)
     return p ? SDL_GetGamepadName(p) : NULL;
 }
 
+/* Capture (Config > Gamepad's press-to-bind): while set, the game and addons see an empty pad. */
+static SDL_AtomicInt g_capture;
+
+void input_pad_capture(int on) { SDL_SetAtomicInt(&g_capture, on != 0); }
+
 static int16_t flip(int16_t v) { return v == -32768 ? 32767 : (int16_t)-v; }
 
-int input_xpad(int index, XPad* x)
+int input_xpad_raw(int index, XPad* x)
 {
     SDL_Gamepad* p = pad(index);
     memset(x, 0, sizeof *x);
@@ -356,6 +361,14 @@ int input_xpad(int index, XPad* x)
     return 1;
 }
 
+int input_xpad(int index, XPad* x)
+{
+    int ok = input_xpad_raw(index, x);
+    if (ok && SDL_GetAtomicInt(&g_capture))
+        memset(x, 0, sizeof *x);
+    return ok;
+}
+
 int input_pad_dinput(int index, uint8_t state[80], uint32_t xbits[32])
 {
     SDL_Gamepad* p = pad(index);
@@ -363,6 +376,11 @@ int input_pad_dinput(int index, uint8_t state[80], uint32_t xbits[32])
     memset(xbits, 0, 32 * sizeof *xbits);
     if (!p)
         return 0;
+    if (SDL_GetAtomicInt(&g_capture))
+    {
+        memset(state + 32, 0xFF, 16); /* the POVs centred */
+        return 1;
+    }
 #define B(name) SDL_GAMEPAD_BUTTON_##name
     enum { LT = B(COUNT), RT, NONE };
     /* each pad's buttons in its own DirectInput order (XIUI's device schemes, after tCrossBar) */
@@ -435,6 +453,8 @@ int input_pad_state(int index, PadState* s)
     s->pov = 0xFFFFFFFFu;
     if (!p)
         return 0;
+    if (SDL_GetAtomicInt(&g_capture))
+        return 1;
     s->x = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTX);
     s->y = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTY);
     s->rx = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHTX);
