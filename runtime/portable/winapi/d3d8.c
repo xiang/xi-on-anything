@@ -238,8 +238,15 @@ static Obj* obj(uint32_t p)
 
 static uint32_t obj_release(uint32_t p);
 
+static void world_flush_pending(void);
+
 static void obj_destroy(Obj* o)
 {
+    /* the scene renderer's batch (host/scene.c) holds the GfxTex and GfxBuf of what its walk found until its flush;
+     * the game can free them in between (a zone change tearing down its textures), and the flush then drew freed
+     * memory and crashed in gfx_chars_draw. So whatever is pending goes out before anything is freed. */
+    if (o->gpu || o->gbuf)
+        world_flush_pending();
     for (uint32_t i = 0; i < o->nsubs; ++i)
     {
         Obj* s = obj(o->subs[i]);
@@ -1259,6 +1266,11 @@ void d3d8_set_present_hook(void (*fn)(void)) { g_present_hook = fn; }
  * changes the targets, copies from them or shows them */
 static void (*g_world_flush)(void);
 void d3d8_set_world_flush(void (*fn)(void)) { g_world_flush = fn; }
+static void world_flush_pending(void)
+{
+    if (g_world_flush)
+        g_world_flush();
+}
 /* the game's own draws inside its zone walk and its character mesh draws (what the scene renderer leaves to the game)
  * don't send the batch out: told apart by where they return to (d3d8_world_ranges: the drawing functions' code).
  * Timing the game's own draws of those for comparison (scene = -1): each run of them goes into a timed pass of its own
