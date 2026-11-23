@@ -836,7 +836,9 @@ static void pump(void)
             rt_log("[recomp] quit\n");
             if (user32_quit_hook)
                 user32_quit_hook();
-            fflush(NULL);
+            /* On macOS a global flush waits for stdin's lock while the launcher reader is in fgets. */
+            fflush(stderr);
+            fflush(stdout);
             _Exit(0);
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
         case SDL_EVENT_WINDOW_FOCUS_LOST:
