@@ -18,7 +18,7 @@
  * the next instances' handles are unchanged or name a light no effect has lit: that is followed here, in the
  * order the game draws.
  *
- * Every address is the 2026-09-03 build's (meta/builds.json "scene_*"); a build without them never turns
+ * Every address is the 2026-09-03 build's (recomp/meta/builds.json "scene_*"); a build without them never turns
  * this on. Checked in the client: docs (FFXI Scene Data and a Replacement Renderer, Phase 0). */
 #include <math.h>
 #include <stdio.h>
@@ -26,7 +26,7 @@
 #include <string.h>
 
 #include "build.h"
-#include "d3d8.h"
+#include "../runtime/portable/winapi/d3d8.h"
 #include "gfx.h"
 #include "gthread.h"
 #include "gwin.h"
@@ -1094,6 +1094,8 @@ static int chars_take(Guest* g, uint32_t res, uint32_t model)
     uint32_t tint = rd32(FFXI_SCENE_TINT);
     if ((tint >> 24) != 0x80 || rd8(FFXI_SCENE_SHINE) || rd8(FFXI_SCENE_SHADOW_MODE) == 1)
         return ++g_ccount.why[2], 0; /* a fading actor (its own target), the shine pass, the silhouette shadows */
+    if (d3d8_disint_capturing(rd32(FFXI_SCENE_PALETTE)))
+        return ++g_ccount.why[2], 0; /* breaking up (disintegrate): the game's draws, which d3d8.c takes apart */
     uint32_t total = rd16(counts) + rd16(counts + 2) + rd32(vbuf + 0x60);
     /* the command stream once without drawing: no environment maps, a texture before every draw, nothing unknown */
     int have_tex = 0, envmap = 0;
